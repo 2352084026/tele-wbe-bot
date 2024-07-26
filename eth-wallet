@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from decimal import Decimal, getcontext
 import datetime
 import time
@@ -382,19 +381,34 @@ def calculate_profit_addresses_multi_threaded(start_time, end_time, target_profi
     calculate_profit = partial(calculate_address_profit, token_contract_address=token_contract_address, pair_contract_address=pair_contract_address)
 
     profit_addresses = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_address = {executor.submit(calculate_profit, address): address for address in qualified_addresses}
-        for future in concurrent.futures.as_completed(future_to_address):
-            address = future_to_address[future]
+    for address in qualified_addresses:
+        if is_contract_address(address):
+            print(f"跳过合约地址: {address}")
+            continue
+
+        label = get_address_label(address)
+        if label and 'exchange' in label.lower():
+            print(f"跳过可能的交易所地址: {address}")
+            continue
+
+        print(f"正在计算地址 {address} 的盈利情况...")
+
+        retry_count = 0
+        max_retries = 5
+        while retry_count < max_retries:
             try:
-                profit_usd = future.result()
-                if not is_contract_address(address):
-                    label = get_address_label(address)
-                    if not (label and 'exchange' in label.lower()):
-                        print(f"地址 {address} 的盈利为 ${profit_usd:.2f}")
-                        profit_addresses.append((address, profit_usd))
-            except Exception as exc:
-                print(f'{address} 生成了一个异常: {exc}')
+                profit_usd = calculate_address_profit(address, token_contract_address, pair_contract_address,
+                                                      start_time_utc, end_time_utc)
+                print(f"地址 {address} 的盈利为 ${profit_usd:.2f}")
+                profit_addresses.append((address, profit_usd))
+                break  # 成功完成计算，跳出重试循环
+            except requests.exceptions.RequestException as e:
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"遇到网络错误: {e}. 将在1秒后重试 (尝试 {retry_count}/{max_retries})")
+                    time.sleep(1)  # 等待1秒后重试
+                else:
+                    print(f"在多次尝试后仍然失败。跳过地址 {address}")
 
     print("所有地址的盈利情况:")
     for address, profit in profit_addresses:
@@ -429,68 +443,81 @@ def calculate_address_profit(address, token_contract_address, pair_contract_addr
     token_contract = web3.eth.contract(address=token_contract_address, abi=ERC20_ABI)
     pair_contract = web3.eth.contract(address=pair_contract_address, abi=UNISWAP_V2_PAIR_ABI)
 
-    # 获取该地址的所有代币交易,不限时间范围
     transactions = get_address_token_transactions(address, token_contract_address, None, None)
     transactions.sort(key=lambda x: int(x['timeStamp']))
 
     processed_tx_hashes = set()
 
     for tx in transactions:
-        tx_hash = tx['hash']
-        if tx_hash in processed_tx_hashes:
-            continue
-        processed_tx_hashes.add(tx_hash)
+        retry_count = 0
+        max_retries = 5
+        while retry_count < max_retries:
+            try:
+                tx_hash = tx['hash']
+                if tx_hash in processed_tx_hashes:
+                    break  # 已处理过的交易直接跳过
+                processed_tx_hashes.add(tx_hash)
 
-        print(f"Processing transaction: {tx_hash}")
+                print(f"Processing transaction: {tx_hash}")
 
-        # 获取同一交易中的所有代币转移
-        related_transfers = [t for t in transactions if t['hash'] == tx_hash]
-        total_token_amount_in = sum(Decimal(t['value']) / Decimal(f"1e{t['tokenDecimal']}") for t in related_transfers if t['to'].lower() == address.lower())
-        total_token_amount_out = sum(Decimal(t['value']) / Decimal(f"1e{t['tokenDecimal']}") for t in related_transfers if t['from'].lower() == address.lower())
+                # 获取同一交易中的所有代币转移
+                related_transfers = [t for t in transactions if t['hash'] == tx_hash]
+                total_token_amount_in = sum(Decimal(t['value']) / Decimal(f"1e{t['tokenDecimal']}") for t in related_transfers if t['to'].lower() == address.lower())
+                total_token_amount_out = sum(Decimal(t['value']) / Decimal(f"1e{t['tokenDecimal']}") for t in related_transfers if t['from'].lower() == address.lower())
 
-        if total_token_amount_in > 0:  # Receiving tokens
-            token_balance += total_token_amount_in
+                if total_token_amount_in > 0:
+                    token_balance += total_token_amount_in
 
-            # 使用函数获取总 ETH 输入
-            eth_amount = get_transaction_eth_input(tx_hash)
+                    # 使用函数获取总 ETH 输入
+                    eth_amount = get_transaction_eth_input(tx_hash)
 
-            if eth_amount > 0:  # Buying tokens
-                total_tokens_bought += total_token_amount_in
-                usd_spent = eth_amount * Decimal(str(get_weth_price_usd()))
-                total_usd_spent += usd_spent
-                eth_balance -= eth_amount
-                print(f"Bought {total_token_amount_in} tokens for {eth_amount} ETH (${usd_spent})")
-            else:
-                print(f"Received {total_token_amount_in} tokens (possibly from another source)")
+                    if eth_amount > 0:  # Buying tokens
+                        total_tokens_bought += total_token_amount_in
+                        usd_spent = eth_amount * Decimal(str(get_weth_price_usd()))
+                        total_usd_spent += usd_spent
+                        eth_balance -= eth_amount
+                        print(f"Bought {total_token_amount_in} tokens for {eth_amount} ETH (${usd_spent})")
+                    else:
+                        print(f"Received {total_token_amount_in} tokens (possibly from another source)")
 
-        if total_token_amount_out > 0:  # Sending tokens
-            token_balance -= total_token_amount_out
-            print(f"Sent {total_token_amount_out} tokens")
+                if total_token_amount_out > 0:
+                    token_balance -= total_token_amount_out
+                    print(f"Sent {total_token_amount_out} tokens")
 
-            # 卖出逻辑保持不变
-            internal_txs = get_internal_transactions_for_tx(tx_hash)
-            eth_received = Decimal('0')
-            for internal_tx in internal_txs:
-                if internal_tx['to'].lower() == address.lower():
-                    eth_amount = Decimal(Web3.from_wei(int(internal_tx['value']), 'ether'))
-                    eth_received += eth_amount
-                    eth_balance += eth_amount
+                    # 卖出逻辑
+                    internal_txs = get_internal_transactions_for_tx(tx_hash)
+                    eth_received = Decimal('0')
+                    for internal_tx in internal_txs:
+                        if internal_tx['to'].lower() == address.lower():
+                            eth_amount = Decimal(Web3.from_wei(int(internal_tx['value']), 'ether'))
+                            eth_received += eth_amount
+                            eth_balance += eth_amount
 
-            if eth_received > 0:
-                usd_received = eth_received * Decimal(str(get_weth_price_usd()))
-                total_usd_received += usd_received
-                total_tokens_sold += total_token_amount_out
-                print(f"Sold {total_token_amount_out} tokens for {eth_received} ETH (${usd_received})")
-            else:
-                print(f"No ETH received for this token transfer")
+                    if eth_received > 0:
+                        usd_received = eth_received * Decimal(str(get_weth_price_usd()))
+                        total_usd_received += usd_received
+                        total_tokens_sold += total_token_amount_out
+                        print(f"Sold {total_token_amount_out} tokens for {eth_received} ETH (${usd_received})")
+                    else:
+                        print(f"No ETH received for this token transfer")
 
-        # 检查余额一致性
-        if token_balance < 0:
-            print(f"Warning: Negative token balance detected. Resetting to 0.")
-            token_balance = Decimal('0')
-        if eth_balance < 0:
-            print(f"Warning: Negative ETH balance detected. Resetting to 0.")
-            eth_balance = Decimal('0')
+                # 检查余额一致性
+                if token_balance < 0:
+                    print(f"Warning: Negative token balance detected. Resetting to 0.")
+                    token_balance = Decimal('0')
+                if eth_balance < 0:
+                    print(f"Warning: Negative ETH balance detected. Resetting to 0.")
+                    eth_balance = Decimal('0')
+
+                break  # 成功处理交易，跳出重试循环
+
+            except requests.exceptions.RequestException as e:
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"处理交易 {tx_hash} 时遇到网络错误: {e}. 将在1秒后重试 (尝试 {retry_count}/{max_retries})")
+                    time.sleep(1)  # 等待1秒后重试
+                else:
+                    print(f"在多次尝试后仍然无法处理交易 {tx_hash}. 跳过此交易")
 
     remaining_tokens = token_balance
 
@@ -507,7 +534,6 @@ def calculate_address_profit(address, token_contract_address, pair_contract_addr
     print(f"当前代币价格 (USD): ${current_token_price_usd:.6f}")
     print(f"当前持仓价值 (USD): ${holding_value_usd:.2f}")
     print(f"总盈利 (USD): ${total_profit_usd:.2f}")
-    print(f"交易数量: {len(transactions)}")
 
     return float(total_profit_usd)
 def get_pair_contract_address(token_address):
