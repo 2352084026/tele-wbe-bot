@@ -2,6 +2,8 @@
 from decimal import Decimal, getcontext
 import datetime
 import time
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 from web3 import Web3
 from web3.exceptions import BlockNotFound
 import pytz
@@ -203,12 +205,21 @@ def is_contract_address(address):
 
 def get_address_label(address):
     api_url = f"https://api.etherscan.io/api?module=account&action=txlist&address={address}&apikey={ETHERSCAN_API_KEY}"
-    response = requests.get(api_url)
-    if response.status_code == 200:
-        data = response.json()
-        if data["status"] == "1" and data["result"]:
-            return data["result"][0]["contractAddress"]
-    return None
+    for attempt in range(5):  # Try up to 5 times
+        try:
+            response = requests_retry_session().get(api_url, timeout=10)
+            response.raise_for_status()  # Raises a HTTPError if the status is 4xx, 5xx
+            data = response.json()
+            if data["status"] == "1" and data["result"]:
+                return data["result"][0]["contractAddress"]
+            return None
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching address label (attempt {attempt+1}): {e}")
+            if attempt < 4:  # If it's not the last attempt
+                time.sleep(5)  # Wait for 5 seconds before retrying
+            else:
+                print(f"Failed to get address label for {address} after 5 attempts")
+                return None
 
 
 def get_qualified_addresses(token_contract_address, start_block, end_block, min_buy_weth):
@@ -356,6 +367,25 @@ def get_internal_transactions(address):
         if data['status'] == '1':
             return data['result']
     return []
+
+def requests_retry_session(
+    retries=3,
+    backoff_factor=0.3,
+    status_forcelist=(500, 502, 504),
+    session=None,
+):
+    session = session or requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
 
 def get_internal_transactions_for_tx(tx_hash):
     url = f"https://api.etherscan.io/api?module=account&action=txlistinternal&txhash={tx_hash}&apikey={ETHERSCAN_API_KEY}"
