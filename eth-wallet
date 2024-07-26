@@ -289,7 +289,7 @@ def get_qualified_addresses(token_contract_address, start_block, end_block, min_
             qualified_addresses.add(buyer)
             print(f"找到符合条件的地址: {buyer}, 买入金额: {weth_amount} WETH")
         else:
-            print(f"买入金额不足: {weth_amount} WETH < {min_buy_weth} WETH")
+            print(f"地址不符合条件: {buyer}, 买入金额: {weth_amount} WETH")
 
     print(f"总共找到 {len(qualified_addresses)} 个符合条件的地址")
     return list(qualified_addresses), pair_contract_address
@@ -334,6 +334,7 @@ def get_token_transfer_amount(tx_hash, address, token_contract):
         print(f"Error processing transaction {tx_hash}: {e}")
     return Decimal('0')
 
+
 def get_eth_value_from_input(tx):
     try:
         # 解析交易输入数据
@@ -347,6 +348,7 @@ def get_eth_value_from_input(tx):
         print(f"Error parsing transaction input: {e}")
     return Decimal('0')
 
+
 def get_internal_transactions(address):
     url = f"https://api.etherscan.io/api?module=account&action=txlistinternal&address={address}&startblock=0&endblock=99999999&sort=asc&apikey={ETHERSCAN_API_KEY}"
     response = requests.get(url)
@@ -355,6 +357,7 @@ def get_internal_transactions(address):
         if data['status'] == '1':
             return data['result']
     return []
+
 
 def get_internal_transactions_for_tx(tx_hash):
     url = f"https://api.etherscan.io/api?module=account&action=txlistinternal&txhash={tx_hash}&apikey={ETHERSCAN_API_KEY}"
@@ -365,7 +368,32 @@ def get_internal_transactions_for_tx(tx_hash):
             return data['result']
     return []
 
-def calculate_profit_addresses_multi_threaded(start_time, end_time, target_profit_usd, token_contract_address, min_buy_weth, max_workers=10):
+
+def get_address_token_transactions_count(address, token_address):
+    url = f"https://api.etherscan.io/api?module=account&action=tokentx&contractaddress={token_address}&address={address}&sort=asc&apikey={ETHERSCAN_API_KEY}"
+
+    total_tx_count = 0
+    page = 1
+    while True:
+        response = requests.get(f"{url}&page={page}&offset=1000")
+        data = response.json()
+
+        if data['status'] == '1':
+            new_transactions = data['result']
+            total_tx_count += len(new_transactions)
+
+            if len(new_transactions) < 1000:
+                break
+
+            page += 1
+        else:
+            print(f"Error fetching transactions: {data['message']}")
+            break
+
+    return total_tx_count
+
+
+def calculate_profit_addresses(start_time, end_time, target_profit_usd, token_contract_address, min_buy_weth, max_tx_count):
     start_timestamp = int(datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC).timestamp())
     end_timestamp = int(datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC).timestamp())
 
@@ -374,11 +402,10 @@ def calculate_profit_addresses_multi_threaded(start_time, end_time, target_profi
 
     print(f"查询区块范围：{start_block} 到 {end_block}")
 
-    qualified_addresses, pair_contract_address = get_qualified_addresses(token_contract_address, start_block, end_block, min_buy_weth)
-    print(f"找到 {len(qualified_addresses)} 个满足买入条件的地址")
 
-    # 创建一个偏函数，固定某些参数
-    calculate_profit = partial(calculate_address_profit, token_contract_address=token_contract_address, pair_contract_address=pair_contract_address)
+    qualified_addresses, pair_contract_address = get_qualified_addresses(token_contract_address, start_block, end_block,
+                                                                     min_buy_weth)
+    print(f"找到 {len(qualified_addresses)} 个满足买入条件的地址")
 
     profit_addresses = []
     for address in qualified_addresses:
@@ -391,28 +418,21 @@ def calculate_profit_addresses_multi_threaded(start_time, end_time, target_profi
             print(f"跳过可能的交易所地址: {address}")
             continue
 
-        print(f"正在计算地址 {address} 的盈利情况...")
+        # 检查地址与代币的总交互次数
+        tx_count = get_address_token_transactions_count(address, token_contract_address)
+        if tx_count > max_tx_count:
+            print(f"跳过交互次数过多的地址: {address}, 交互次数: {tx_count}")
+            continue
 
-        retry_count = 0
-        max_retries = 5
-        while retry_count < max_retries:
-            try:
-                profit_usd = calculate_address_profit(address, token_contract_address, pair_contract_address,
-                                                      start_time_utc, end_time_utc)
-                print(f"地址 {address} 的盈利为 ${profit_usd:.2f}")
-                profit_addresses.append((address, profit_usd))
-                break  # 成功完成计算，跳出重试循环
-            except requests.exceptions.RequestException as e:
-                retry_count += 1
-                if retry_count < max_retries:
-                    print(f"遇到网络错误: {e}. 将在1秒后重试 (尝试 {retry_count}/{max_retries})")
-                    time.sleep(1)  # 等待1秒后重试
-                else:
-                    print(f"在多次尝试后仍然失败。跳过地址 {address}")
+        print(f"正在计算地址 {address} 的盈利情况...")
+        profit_usd = calculate_address_profit(address, token_contract_address, pair_contract_address)
+        print(f"地址 {address} 的盈利为 ${profit_usd:.2f}")
+
+        profit_addresses.append((address, profit_usd))
 
     print("所有地址的盈利情况:")
     for address, profit in profit_addresses:
-        print(f"地址: {address}，盈利: ${profit:.2f}")
+        print(f"地址: {address}, 盈利: ${profit:.2f}")
 
     return [addr for addr in profit_addresses if addr[1] >= target_profit_usd]
 
@@ -432,40 +452,43 @@ def get_transaction_eth_input(tx_hash):
     return total_eth_input
 
 
-def calculate_address_profit(address, token_contract_address, pair_contract_address):
-    total_usd_spent = Decimal('0')
-    total_usd_received = Decimal('0')
-    total_tokens_bought = Decimal('0')
-    total_tokens_sold = Decimal('0')
-    token_balance = Decimal('0')
-    eth_balance = Decimal('0')
+def calculate_address_profit(address, token_contract_address, pair_contract_address, max_retries=3, retry_delay=1):
+    for attempt in range(max_retries):
+        try:
+            total_usd_spent = Decimal('0')
+            total_usd_received = Decimal('0')
+            total_tokens_bought = Decimal('0')
+            total_tokens_sold = Decimal('0')
+            token_balance = Decimal('0')
+            eth_balance = Decimal('0')
 
-    token_contract = web3.eth.contract(address=token_contract_address, abi=ERC20_ABI)
-    pair_contract = web3.eth.contract(address=pair_contract_address, abi=UNISWAP_V2_PAIR_ABI)
+            token_contract = web3.eth.contract(address=token_contract_address, abi=ERC20_ABI)
+            pair_contract = web3.eth.contract(address=pair_contract_address, abi=UNISWAP_V2_PAIR_ABI)
 
-    transactions = get_address_token_transactions(address, token_contract_address, None, None)
-    transactions.sort(key=lambda x: int(x['timeStamp']))
+            # 获取该地址的所有代币交易,不限时间范围
+            transactions = get_address_token_transactions(address, token_contract_address, None, None)
+            transactions.sort(key=lambda x: int(x['timeStamp']))
 
-    processed_tx_hashes = set()
+            processed_tx_hashes = set()
 
-    for tx in transactions:
-        retry_count = 0
-        max_retries = 5
-        while retry_count < max_retries:
-            try:
+            for tx in transactions:
                 tx_hash = tx['hash']
                 if tx_hash in processed_tx_hashes:
-                    break  # 已处理过的交易直接跳过
+                    continue
                 processed_tx_hashes.add(tx_hash)
 
                 print(f"Processing transaction: {tx_hash}")
 
                 # 获取同一交易中的所有代币转移
                 related_transfers = [t for t in transactions if t['hash'] == tx_hash]
-                total_token_amount_in = sum(Decimal(t['value']) / Decimal(f"1e{t['tokenDecimal']}") for t in related_transfers if t['to'].lower() == address.lower())
-                total_token_amount_out = sum(Decimal(t['value']) / Decimal(f"1e{t['tokenDecimal']}") for t in related_transfers if t['from'].lower() == address.lower())
+                total_token_amount_in = sum(
+                    Decimal(t['value']) / Decimal(f"1e{t['tokenDecimal']}") for t in related_transfers if
+                    t['to'].lower() == address.lower())
+                total_token_amount_out = sum(
+                    Decimal(t['value']) / Decimal(f"1e{t['tokenDecimal']}") for t in related_transfers if
+                    t['from'].lower() == address.lower())
 
-                if total_token_amount_in > 0:
+                if total_token_amount_in > 0:  # Receiving tokens
                     token_balance += total_token_amount_in
 
                     # 使用函数获取总 ETH 输入
@@ -480,11 +503,11 @@ def calculate_address_profit(address, token_contract_address, pair_contract_addr
                     else:
                         print(f"Received {total_token_amount_in} tokens (possibly from another source)")
 
-                if total_token_amount_out > 0:
+                if total_token_amount_out > 0:  # Sending tokens
                     token_balance -= total_token_amount_out
                     print(f"Sent {total_token_amount_out} tokens")
 
-                    # 卖出逻辑
+                    # 卖出逻辑保持不变
                     internal_txs = get_internal_transactions_for_tx(tx_hash)
                     eth_received = Decimal('0')
                     for internal_tx in internal_txs:
@@ -509,33 +532,37 @@ def calculate_address_profit(address, token_contract_address, pair_contract_addr
                     print(f"Warning: Negative ETH balance detected. Resetting to 0.")
                     eth_balance = Decimal('0')
 
-                break  # 成功处理交易，跳出重试循环
+            remaining_tokens = token_balance
 
-            except requests.exceptions.RequestException as e:
-                retry_count += 1
-                if retry_count < max_retries:
-                    print(f"处理交易 {tx_hash} 时遇到网络错误: {e}. 将在1秒后重试 (尝试 {retry_count}/{max_retries})")
-                    time.sleep(1)  # 等待1秒后重试
-                else:
-                    print(f"在多次尝试后仍然无法处理交易 {tx_hash}. 跳过此交易")
+            current_token_price_usd = get_token_price_uniswap(token_contract_address)
+            holding_value_usd = remaining_tokens * current_token_price_usd
+            total_profit_usd = holding_value_usd + total_usd_received - total_usd_spent
 
-    remaining_tokens = token_balance
+            print(f"地址 {address} 的详细盈利情况:")
+            print(f"总花费 USD: ${total_usd_spent:.2f}")
+            print(f"总收入 USD: ${total_usd_received:.2f}")
+            print(f"总买入代币: {total_tokens_bought:.6f}")
+            print(f"总卖出代币: {total_tokens_sold:.6f}")
+            print(f"剩余代币: {remaining_tokens:.6f}")
+            print(f"当前代币价格 (USD): ${current_token_price_usd:.6f}")
+            print(f"当前持仓价值 (USD): ${holding_value_usd:.2f}")
+            print(f"总盈利 (USD): ${total_profit_usd:.2f}")
+            print(f"交易数量: {len(transactions)}")
 
-    current_token_price_usd = get_token_price_uniswap(token_contract_address)
-    holding_value_usd = remaining_tokens * current_token_price_usd
-    total_profit_usd = holding_value_usd + total_usd_received - total_usd_spent
+            return float(total_profit_usd)
 
-    print(f"地址 {address} 的详细盈利情况:")
-    print(f"总花费 USD: ${total_usd_spent:.2f}")
-    print(f"总收入 USD: ${total_usd_received:.2f}")
-    print(f"总买入代币: {total_tokens_bought:.6f}")
-    print(f"总卖出代币: {total_tokens_sold:.6f}")
-    print(f"剩余代币: {remaining_tokens:.6f}")
-    print(f"当前代币价格 (USD): ${current_token_price_usd:.6f}")
-    print(f"当前持仓价值 (USD): ${holding_value_usd:.2f}")
-    print(f"总盈利 (USD): ${total_profit_usd:.2f}")
+        except requests.exceptions.RequestException as e:
+            if attempt < max_retries - 1:
+                print(f"计算地址 {address} 的盈利时发生API错误: {e}")
+                print(f"等待 {retry_delay} 秒后重试...")
+                time.sleep(retry_delay)
+            else:
+                print(f"在 {max_retries} 次尝试后仍无法计算地址 {address} 的盈利")
+                return 0
 
-    return float(total_profit_usd)
+    return 0  # 如果所有重试都失败，返回0
+
+
 def get_pair_contract_address(token_address):
     UNISWAP_V2_FACTORY = Web3.to_checksum_address('0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f')
     UNISWAP_V2_FACTORY_ABI = [
@@ -556,7 +583,7 @@ def get_pair_contract_address(token_address):
     print(f"Pair合约地址: {pair_address}")
     return pair_address
 
-# 修改get_token_price_uniswap函数
+
 # 修改get_token_price_uniswap函数
 def get_token_price_uniswap(token_address):
     method = "post"
@@ -576,60 +603,73 @@ def get_token_price_uniswap(token_address):
     body = requestOptions.get("body", {})
     params = requestOptions.get("params", {})
 
-    try:
-        response = requests.post(apiUrl, headers=headers, json=body, params=params)
-        data = response.json()
+    max_retries = 3
+    retry_delay = 1  # 延迟1秒
 
-        if response.status_code == 200 and token_address.lower() in data:
-            token_price_usd = Decimal(data[token_address.lower()])
-            print(f"从1inch API获取到的代币价格: ${token_price_usd} USD")
-            return token_price_usd
-        else:
-            print(f"无法从1inch API获取代币 {token_address} 的价格")
-            print(f"API响应: {data}")
-            return Decimal('0')
-    except Exception as e:
-        print(f"从1inch API获取代币价格时发生错误: {e}")
-        import traceback
-        traceback.print_exc()
-        return Decimal('0')
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(apiUrl, headers=headers, json=body, params=params)
+            data = response.json()
 
+            if response.status_code == 200 and token_address.lower() in data:
+                token_price_usd = Decimal(data[token_address.lower()])
+                print(f"从1inch API获取到的代币价格: ${token_price_usd} USD")
+                return token_price_usd
+            else:
+                print(f"无法从1inch API获取代币 {token_address} 的价格")
+                print(f"API响应: {data}")
+                if attempt < max_retries - 1:
+                    print(f"等待 {retry_delay} 秒后重试...")
+                    time.sleep(retry_delay)
+                else:
+                    return Decimal('0')
+        except Exception as e:
+            print(f"从1inch API获取代币价格时发生错误: {e}")
+            if attempt < max_retries - 1:
+                print(f"等待 {retry_delay} 秒后重试...")
+                time.sleep(retry_delay)
+            else:
+                import traceback
+                traceback.print_exc()
+                return Decimal('0')
 
-def calculate_profit_addresses(start_time, end_time, target_profit_usd, token_contract_address, min_buy_weth):
-    start_timestamp = int(datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC).timestamp())
-    end_timestamp = int(datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC).timestamp())
+        def calculate_profit_addresses(start_time, end_time, target_profit_usd, token_contract_address, min_buy_weth,
+                                       min_tx_count):
+            start_timestamp = int(
+                datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC).timestamp())
+            end_timestamp = int(datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.UTC).timestamp())
 
-    start_block = get_block_number_by_time(start_timestamp)
-    end_block = get_block_number_by_time(end_timestamp)
+            start_block = get_block_number_by_time(start_timestamp)
+            end_block = get_block_number_by_time(end_timestamp)
 
-    print(f"查询区块范围：{start_block} 到 {end_block}")
+            print(f"查询区块范围：{start_block} 到 {end_block}")
 
-    qualified_addresses, pair_contract_address = get_qualified_addresses(token_contract_address, start_block, end_block, min_buy_weth)
-    print(f"找到 {len(qualified_addresses)} 个满足买入条件的地址")
+            qualified_addresses, pair_contract_address = get_qualified_addresses(token_contract_address, start_block,
+                                                                                 end_block, min_buy_weth, min_tx_count)
+            print(f"找到 {len(qualified_addresses)} 个满足买入条件的地址")
 
-    profit_addresses = []
-    for address in qualified_addresses:
-        if is_contract_address(address):
-            print(f"跳过合约地址: {address}")
-            continue
+            profit_addresses = []
+            for address in qualified_addresses:
+                if is_contract_address(address):
+                    print(f"跳过合约地址: {address}")
+                    continue
 
-        label = get_address_label(address)
-        if label and 'exchange' in label.lower():
-            print(f"跳过可能的交易所地址: {address}")
-            continue
+                label = get_address_label(address)
+                if label and 'exchange' in label.lower():
+                    print(f"跳过可能的交易所地址: {address}")
+                    continue
 
-        print(f"正在计算地址 {address} 的盈利情况...")
-        profit_usd = calculate_address_profit(address, token_contract_address, pair_contract_address, start_time_utc,end_time_utc)
-        print(f"地址 {address} 的盈利为 ${profit_usd:.2f}")
+                print(f"正在计算地址 {address} 的盈利情况...")
+                profit_usd = calculate_address_profit(address, token_contract_address, pair_contract_address)
+                print(f"地址 {address} 的盈利为 ${profit_usd:.2f}")
 
-        profit_addresses.append((address, profit_usd))
+                profit_addresses.append((address, profit_usd))
 
-    print("所有地址的盈利情况:")
-    for address, profit in profit_addresses:
-        print(f"地址: {address}, 盈利: ${profit:.2f}")
+            print("所有地址的盈利情况:")
+            for address, profit in profit_addresses:
+                print(f"地址: {address}, 盈利: ${profit:.2f}")
 
-    return [addr for addr in profit_addresses if addr[1] >= target_profit_usd]
-
+            return [addr for addr in profit_addresses if addr[1] >= target_profit_usd]
 
 if __name__ == "__main__":
     try:
@@ -640,6 +680,7 @@ if __name__ == "__main__":
         end_time_input = input("请输入结束时间 (格式为 7.25-0.40): ")
         target_profit_usd = float(input("请输入目标盈利金额 (Target Profit in USD): "))
         min_buy_weth = float(input("请输入最小单笔买入WETH数量: "))
+        max_tx_count = int(input("请输入最大交易次数（跳过与代币交互次数大于该值的地址）: "))
 
         # 预处理时间输入
         current_year = datetime.now().year
@@ -691,11 +732,9 @@ if __name__ == "__main__":
         print(f"查询区块范围：{start_block} 到 {end_block}")
         print(f"查询的代币合约地址: {token_contract_address}")
         print(f"最小单笔买入WETH数量: {min_buy_weth}")
+        print(f"最大交易次数: {max_tx_count}")
 
-        interaction_threshold = int(input("请输入地址与代币交互的最大次数（超过将跳过该地址）: "))
-
-        qualified_addresses, pair_contract_address = get_qualified_addresses(token_contract_address, start_block,
-                                                                             end_block, min_buy_weth)
+        qualified_addresses, pair_contract_address = get_qualified_addresses(token_contract_address, start_block, end_block, min_buy_weth)
         print(f"符合买入条件的地址数量: {len(qualified_addresses)}")
 
         profit_addresses = []
@@ -709,19 +748,19 @@ if __name__ == "__main__":
                 print(f"跳过可能的交易所地址: {address}")
                 continue
 
-            # 获取地址与代币的交互次数
-            transactions = get_address_token_transactions(address, token_contract_address, None, None)
-            interaction_count = len(transactions)
-
-            if interaction_count > interaction_threshold:
-                print(
-                    f"跳过地址 {address}，因为其与代币的交互次数 ({interaction_count}) 超过了设定的阈值 ({interaction_threshold})")
+            # 检查地址与代币的总交互次数
+            tx_count = get_address_token_transactions_count(address, token_contract_address)
+            if tx_count > max_tx_count:
+                print(f"跳过交互次数过多的地址: {address}, 交互次数: {tx_count}")
                 continue
 
             print(f"正在计算地址 {address} 的总体盈利情况...")
             profit_usd = calculate_address_profit(address, token_contract_address, pair_contract_address)
-            print(f"地址 {address} 的总体盈利为 ${profit_usd:.2f}")
-            profit_addresses.append((address, profit_usd))
+            if profit_usd > 0:
+                print(f"地址 {address} 的总体盈利为 ${profit_usd:.2f}")
+                profit_addresses.append((address, profit_usd))
+            else:
+                print(f"无法计算地址 {address} 的盈利，跳过")
 
         print(f"计算完成，找到 {len(profit_addresses)} 个地址")
         print("所有地址的盈利情况:")
@@ -740,5 +779,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"程序执行过程中发生错误: {e}")
         import traceback
-
         traceback.print_exc()
