@@ -205,22 +205,16 @@ def is_contract_address(address):
 
 def get_address_label(address):
     api_url = f"https://api.etherscan.io/api?module=account&action=txlist&address={address}&apikey={ETHERSCAN_API_KEY}"
-    for attempt in range(5):  # Try up to 5 times
-        try:
-            response = requests_retry_session().get(api_url, timeout=10)
-            response.raise_for_status()  # Raises a HTTPError if the status is 4xx, 5xx
+    try:
+        response = requests.get(api_url)
+        time.sleep(0.2)  # 在每次 API 调用后添加 1 秒的延时
+        if response.status_code == 200:
             data = response.json()
             if data["status"] == "1" and data["result"]:
                 return data["result"][0]["contractAddress"]
-            return None
-        except requests.exceptions.RequestException as e:
-            print(f"Error fetching address label (attempt {attempt+1}): {e}")
-            if attempt < 4:  # If it's not the last attempt
-                time.sleep(5)  # Wait for 5 seconds before retrying
-            else:
-                print(f"Failed to get address label for {address} after 5 attempts")
-                return None
-
+    except Exception as e:
+        print(f"Error fetching address label: {e}")
+    return None
 
 def get_qualified_addresses(token_contract_address, start_block, end_block, min_buy_weth):
     # Uniswap V2 Factory address
@@ -461,6 +455,7 @@ def calculate_address_profit(address, token_contract_address, pair_contract_addr
 
     # 获取该地址的所有代币交易,不限时间范围
     transactions = get_address_token_transactions(address, token_contract_address, None, None)
+    time.sleep(0.2) 
     transactions.sort(key=lambda x: int(x['timeStamp']))
 
     processed_tx_hashes = set()
