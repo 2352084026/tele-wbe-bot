@@ -33,10 +33,104 @@ WETH = Web3.to_checksum_address('0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2')
 USDC = Web3.to_checksum_address('0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48')
 
 # ABI 定义 (省略了具体内容,使用时请填入完整ABI)
-UNISWAP_V2_ROUTER_ABI = [...]
-UNISWAP_V2_PAIR_ABI = [...]
-ERC20_ABI = [...]
-WETH_ABI = [...]
+UNISWAP_V2_ROUTER_ABI = [
+    {
+        "inputs": [
+            {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
+            {"internalType": "address[]", "name": "path", "type": "address[]"}
+        ],
+        "name": "getAmountsOut",
+        "outputs": [{"internalType": "uint256[]", "name": "amounts", "type": "uint256[]"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
+UNISWAP_V2_PAIR_ABI = [
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "sender", "type": "address"},
+            {"indexed": False, "name": "amount0In", "type": "uint256"},
+            {"indexed": False, "name": "amount1In", "type": "uint256"},
+            {"indexed": False, "name": "amount0Out", "type": "uint256"},
+            {"indexed": False, "name": "amount1Out", "type": "uint256"},
+            {"indexed": True, "name": "to", "type": "address"}
+        ],
+        "name": "Swap",
+        "type": "event"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "token0",
+        "outputs": [{"name": "", "type": "address"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "token1",
+        "outputs": [{"name": "", "type": "address"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "getReserves",
+        "outputs": [
+            {"name": "reserve0", "type": "uint112"},
+            {"name": "reserve1", "type": "uint112"},
+            {"name": "blockTimestampLast", "type": "uint32"}
+        ],
+        "type": "function"
+    }
+]
+
+ERC20_ABI = [
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "name",
+        "outputs": [{"name": "", "type": "string"}],
+        "payable": False,
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+WETH_ABI = [
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "name",
+        "outputs": [{"name": "", "type": "string"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "symbol",
+        "outputs": [{"name": "", "type": "string"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "decimals",
+        "outputs": [{"name": "", "type": "uint8"}],
+        "type": "function"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "src", "type": "address"},
+            {"indexed": True, "name": "dst", "type": "address"},
+            {"indexed": False, "name": "wad", "type": "uint256"}
+        ],
+        "name": "Transfer",
+        "type": "event"
+    }
+]
 
 # 创建合约实例
 uniswap_contract = web3.eth.contract(address=UNISWAP_V2_ROUTER, abi=UNISWAP_V2_ROUTER_ABI)
@@ -441,7 +535,7 @@ def get_token_price_uniswap(token_address):
                     return Decimal('0')
 
 def main():
-    application = ApplicationBuilder().token('YOUR_BOT_TOKEN').build()
+    application = ApplicationBuilder().token('7321860628:AAELm29TZKQQCAmgNvDjZYO8ZLFIRKiPpA8').build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('analyze', analyze)],
