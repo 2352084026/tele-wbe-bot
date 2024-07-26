@@ -2,8 +2,6 @@
 from decimal import Decimal, getcontext
 import datetime
 import time
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
 from web3 import Web3
 from web3.exceptions import BlockNotFound
 import pytz
@@ -205,16 +203,13 @@ def is_contract_address(address):
 
 def get_address_label(address):
     api_url = f"https://api.etherscan.io/api?module=account&action=txlist&address={address}&apikey={ETHERSCAN_API_KEY}"
-    try:
-        response = requests.get(api_url)
-        time.sleep(0.2)  # 在每次 API 调用后添加 1 秒的延时
-        if response.status_code == 200:
-            data = response.json()
-            if data["status"] == "1" and data["result"]:
-                return data["result"][0]["contractAddress"]
-    except Exception as e:
-        print(f"Error fetching address label: {e}")
+    response = requests.get(api_url)
+    if response.status_code == 200:
+        data = response.json()
+        if data["status"] == "1" and data["result"]:
+            return data["result"][0]["contractAddress"]
     return None
+
 
 def get_qualified_addresses(token_contract_address, start_block, end_block, min_buy_weth):
     # Uniswap V2 Factory address
@@ -362,25 +357,6 @@ def get_internal_transactions(address):
             return data['result']
     return []
 
-def requests_retry_session(
-    retries=3,
-    backoff_factor=0.3,
-    status_forcelist=(500, 502, 504),
-    session=None,
-):
-    session = session or requests.Session()
-    retry = Retry(
-        total=retries,
-        read=retries,
-        connect=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=status_forcelist,
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    return session
-
 def get_internal_transactions_for_tx(tx_hash):
     url = f"https://api.etherscan.io/api?module=account&action=txlistinternal&txhash={tx_hash}&apikey={ETHERSCAN_API_KEY}"
     response = requests.get(url)
@@ -455,7 +431,6 @@ def calculate_address_profit(address, token_contract_address, pair_contract_addr
 
     # 获取该地址的所有代币交易,不限时间范围
     transactions = get_address_token_transactions(address, token_contract_address, None, None)
-    time.sleep(0.2) 
     transactions.sort(key=lambda x: int(x['timeStamp']))
 
     processed_tx_hashes = set()
