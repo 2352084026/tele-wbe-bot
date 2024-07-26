@@ -139,46 +139,55 @@ weth_contract = web3.eth.contract(address=WETH, abi=WETH_ABI)
 # 定义对话状态
 TOKEN_ADDRESS, START_TIME, END_TIME, TARGET_PROFIT, MIN_BUY_WETH, MAX_TX_COUNT = range(6)
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('欢迎使用ETH地址分析bot! 使用 /analyze 开始分析。')
 
+
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text('请输入代币合约地址:')
+    await update.message.reply_text('请输入代币合约地址-如果该地址不是使用eth进行购买会使计算不准确:')
     return TOKEN_ADDRESS
+
 
 async def token_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['token_address'] = update.message.text
-    await update.message.reply_text('请输入开始时间 (格式为 7.25-0.40):')
+    await update.message.reply_text('请输入开始时间 (格式为 7.25-0.40-此格式代指7月25日零点40分):')
     return START_TIME
+
 
 async def start_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['start_time'] = update.message.text
-    await update.message.reply_text('请输入结束时间 (格式为 7.25-0.40):')
+    await update.message.reply_text('请输入结束时间 (格式为 7.25-0.40-格式和上面一致)-时间不要太长，不然计算时间会很长，除非你的单笔买入很大:')
     return END_TIME
+
 
 async def end_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['end_time'] = update.message.text
-    await update.message.reply_text('请输入目标盈利金额 (USD):')
+    await update.message.reply_text('请输入目标总盈利金额-给出20个点左右误差浮动，eth参照价格不一样 (USD):')
     return TARGET_PROFIT
+
 
 async def target_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['target_profit'] = float(update.message.text)
-    await update.message.reply_text('请输入最小单笔买入WETH数量:')
+    await update.message.reply_text('请输入时间段内地址可能的最大单笔买入WETH数量-不能超过实际购买的数量不然找不到，尽量高:')
     return MIN_BUY_WETH
+
 
 async def min_buy_weth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['min_buy_weth'] = float(update.message.text)
-    await update.message.reply_text('请输入最大交易次数:')
+    await update.message.reply_text('请输入最大交易次数-指该地址和该代币交互次数，越少越好，如果你认为它准确的话:')
     return MAX_TX_COUNT
+
 
 async def max_tx_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['max_tx_count'] = int(update.message.text)
     await update.message.reply_text('正在分析，请稍候...')
-    
+
     result = run_analysis(context.user_data)
-    
+
     await update.message.reply_text(result)
     return ConversationHandler.END
+
 
 def run_analysis(data):
     try:
@@ -195,7 +204,8 @@ def run_analysis(data):
         start_month_day, start_time_part = start_time_input.split('-')
         start_month, start_day = map(int, start_month_day.split('.'))
         start_hour, start_minute = map(int, start_time_part.split('.'))
-        start_time_beijing = beijing_tz.localize(datetime(current_year, start_month, start_day, start_hour, start_minute))
+        start_time_beijing = beijing_tz.localize(
+            datetime(current_year, start_month, start_day, start_hour, start_minute))
         start_time_utc = start_time_beijing.astimezone(pytz.UTC)
 
         end_month_day, end_time_part = end_time_input.split('-')
@@ -210,7 +220,8 @@ def run_analysis(data):
         start_block = get_block_number_by_time(start_timestamp)
         end_block = get_block_number_by_time(end_timestamp)
 
-        qualified_addresses, pair_contract_address = get_qualified_addresses(token_contract_address, start_block, end_block, min_buy_weth)
+        qualified_addresses, pair_contract_address = get_qualified_addresses(token_contract_address, start_block,
+                                                                             end_block, min_buy_weth)
 
         profit_addresses = []
         for address in qualified_addresses:
@@ -243,6 +254,7 @@ def run_analysis(data):
     except Exception as e:
         return f"分析过程中发生错误: {str(e)}"
 
+
 # 以下是从原始代码中提取的核心函数
 def get_block_number_by_time(timestamp):
     latest_block = web3.eth.get_block('latest')
@@ -264,6 +276,7 @@ def get_block_number_by_time(timestamp):
             return mid
 
     return high  # 返回最接近但不超过目标时间戳的区块
+
 
 def get_qualified_addresses(token_contract_address, start_block, end_block, min_buy_weth):
     # Uniswap V2 Factory address
@@ -349,9 +362,11 @@ def get_qualified_addresses(token_contract_address, start_block, end_block, min_
     print(f"总共找到 {len(qualified_addresses)} 个符合条件的地址")
     return list(qualified_addresses), pair_contract_address
 
+
 def is_contract_address(address):
     code = web3.eth.get_code(address)
     return len(code) > 0
+
 
 def get_address_label(address):
     api_url = f"https://api.etherscan.io/api?module=account&action=txlist&address={address}&apikey={ETHERSCAN_API_KEY}"
@@ -361,6 +376,7 @@ def get_address_label(address):
         if data["status"] == "1" and data["result"]:
             return data["result"][0]["contractAddress"]
     return None
+
 
 def get_address_token_transactions_count(address, token_address):
     url = f"https://api.etherscan.io/api?module=account&action=tokentx&contractaddress={token_address}&address={address}&sort=asc&apikey={ETHERSCAN_API_KEY}"
@@ -384,6 +400,7 @@ def get_address_token_transactions_count(address, token_address):
             break
 
     return total_tx_count
+
 
 def calculate_address_profit(address, token_contract_address, pair_contract_address, max_retries=3, retry_delay=1):
     for attempt in range(max_retries):
@@ -495,6 +512,7 @@ def calculate_address_profit(address, token_contract_address, pair_contract_addr
 
     return 0  # 如果所有重试都失败，返回0
 
+
 def get_token_price_uniswap(token_address):
     method = "post"
     apiUrl = "https://api.1inch.dev/price/v1.1/1"
@@ -533,6 +551,77 @@ def get_token_price_uniswap(token_address):
                     time.sleep(retry_delay)
                 else:
                     return Decimal('0')
+        except Exception as e:
+            print(f"从1inch API获取代币价格时发生错误: {e}")
+            if attempt < max_retries - 1:
+                print(f"等待 {retry_delay} 秒后重试...")
+                time.sleep(retry_delay)
+            else:
+                import traceback
+                traceback.print_exc()
+                return Decimal('0')
+
+
+def get_address_token_transactions(address, token_address, start_time, end_time):
+    # 移除start_block和end_block的计算
+    url = f"https://api.etherscan.io/api?module=account&action=tokentx&contractaddress={token_address}&address={address}&sort=asc&apikey={ETHERSCAN_API_KEY}"
+
+    transactions = []
+    page = 1
+    while True:
+        response = requests.get(f"{url}&page={page}&offset=1000")
+        data = response.json()
+
+        if data['status'] == '1':
+            new_transactions = data['result']
+            transactions.extend(new_transactions)
+
+            if len(new_transactions) < 1000:
+                break
+
+            page += 1
+        else:
+            print(f"Error fetching transactions: {data['message']}")
+            break
+
+    return transactions
+
+def get_transaction_eth_input(tx_hash):
+    tx = web3.eth.get_transaction(tx_hash)
+    receipt = web3.eth.get_transaction_receipt(tx_hash)
+
+    total_eth_input = Decimal(Web3.from_wei(tx['value'], 'ether'))
+
+    # 检查内部交易
+    internal_txs = get_internal_transactions_for_tx(tx_hash)
+    for internal_tx in internal_txs:
+        if internal_tx['from'].lower() == tx['from'].lower():
+            total_eth_input += Decimal(Web3.from_wei(int(internal_tx['value']), 'ether'))
+
+    return total_eth_input
+
+def get_weth_price_usd():
+    try:
+        weth_amount_wei = Web3.to_wei(1, 'ether')
+        amounts = uniswap_contract.functions.getAmountsOut(
+            weth_amount_wei,
+            [WETH, USDC]
+        ).call()
+        weth_price_usd = Decimal(amounts[1]) / Decimal('1e6')  # USDC 是 6 位小数
+        return float(weth_price_usd)
+    except Exception as e:
+        print(f"错误：从Uniswap获取WETH对USD的价格时发生异常: {e}")
+        return 0
+
+
+def get_internal_transactions_for_tx(tx_hash):
+    url = f"https://api.etherscan.io/api?module=account&action=txlistinternal&txhash={tx_hash}&apikey={ETHERSCAN_API_KEY}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        if data['status'] == '1':
+            return data['result']
+    return []
 
 def main():
     application = ApplicationBuilder().token('7321860628:AAELm29TZKQQCAmgNvDjZYO8ZLFIRKiPpA8').build()
@@ -554,6 +643,7 @@ def main():
     application.add_handler(conv_handler)
 
     application.run_polling()
+
 
 if __name__ == '__main__':
     main()
