@@ -692,6 +692,8 @@ if __name__ == "__main__":
         print(f"查询的代币合约地址: {token_contract_address}")
         print(f"最小单笔买入WETH数量: {min_buy_weth}")
 
+        interaction_threshold = int(input("请输入地址与代币交互的最大次数（超过将跳过该地址）: "))
+
         qualified_addresses, pair_contract_address = get_qualified_addresses(token_contract_address, start_block,
                                                                              end_block, min_buy_weth)
         print(f"符合买入条件的地址数量: {len(qualified_addresses)}")
@@ -707,10 +709,20 @@ if __name__ == "__main__":
                 print(f"跳过可能的交易所地址: {address}")
                 continue
 
+            # 获取地址与代币的交互次数
+            transactions = get_address_token_transactions(address, token_contract_address, None, None)
+            interaction_count = len(transactions)
+
+            if interaction_count > interaction_threshold:
+                print(
+                    f"跳过地址 {address}，因为其与代币的交互次数 ({interaction_count}) 超过了设定的阈值 ({interaction_threshold})")
+                continue
+
             print(f"正在计算地址 {address} 的总体盈利情况...")
             profit_usd = calculate_address_profit(address, token_contract_address, pair_contract_address)
             print(f"地址 {address} 的总体盈利为 ${profit_usd:.2f}")
             profit_addresses.append((address, profit_usd))
+
         print(f"计算完成，找到 {len(profit_addresses)} 个地址")
         print("所有地址的盈利情况:")
         for address, profit in profit_addresses:
@@ -726,7 +738,7 @@ if __name__ == "__main__":
         else:
             print("没有找到符合条件的盈利地址。")
     except Exception as e:
-            print(f"程序执行过程中发生错误: {e}")
-            import traceback
+        print(f"程序执行过程中发生错误: {e}")
+        import traceback
 
-            traceback.print_exc()
+        traceback.print_exc()
