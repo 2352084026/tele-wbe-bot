@@ -26,7 +26,6 @@ ETHERSCAN_API_KEY = 'JNV7UHVNJV46UPMD1YC5A9DK2N78J8UQAT'
 
 # 连接到以太坊网络
 web3 = Web3(Web3.HTTPProvider(f'https://eth-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}'))
-
 # 合约地址
 UNISWAP_V2_ROUTER = Web3.to_checksum_address('0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D')
 WETH = Web3.to_checksum_address('0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2')
@@ -145,7 +144,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text('请输入代币合约地址-如果该地址不是使用eth进行购买会使计算不准确:')
+    await update.message.reply_text('请输入代币合约地址-不能识别ens地址-买卖不是使用eth，或者卖出换的不上eth会使数据不准确:')
     return TOKEN_ADDRESS
 
 
@@ -226,6 +225,9 @@ def run_analysis(data):
         start_block = get_block_number_by_time(start_timestamp)
         end_block = get_block_number_by_time(end_timestamp)
 
+        print(f"查询时间范围: {start_time_utc} 到 {end_time_utc}")
+        print(f"查询区块范围: {start_block} 到 {end_block}")
+
         qualified_addresses, pair_contract_address = get_qualified_addresses(token_contract_address, start_block,
                                                                              end_block, min_buy_weth)
 
@@ -268,6 +270,8 @@ def run_analysis(data):
 # 以下是从原始代码中提取的核心函数
 def get_block_number_by_time(timestamp):
     latest_block = web3.eth.get_block('latest')
+    print(f"目标时间戳: {timestamp}, 最新区块时间戳: {latest_block['timestamp']}")
+
     if latest_block['timestamp'] < timestamp:
         print(f"警告：目标时间戳 {timestamp} 超过了最新区块的时间戳 {latest_block['timestamp']}")
         return latest_block['number']
@@ -283,9 +287,11 @@ def get_block_number_by_time(timestamp):
         elif block['timestamp'] > timestamp:
             high = mid - 1
         else:
+            print(f"找到精确匹配的区块: {mid}, 时间戳: {block['timestamp']}")
             return mid
 
-    return high  # 返回最接近但不超过目标时间戳的区块
+    print(f"最接近的区块: {high}, 时间戳: {web3.eth.get_block(high)['timestamp']}")
+    return high
 
 
 def get_qualified_addresses(token_contract_address, start_block, end_block, min_buy_weth):
@@ -342,8 +348,11 @@ def get_qualified_addresses(token_contract_address, start_block, end_block, min_
     pair_contract = web3.eth.contract(address=pair_contract_address, abi=pair_abi)
 
     # Get Swap events
+    print(f"正在查询区块范围 {start_block} 到 {end_block} 的 Swap 事件")
     swap_filter = pair_contract.events.Swap.create_filter(fromBlock=start_block, toBlock=end_block)
     swap_events = swap_filter.get_all_entries()
+
+    print(f"共找到 {len(swap_events)} 个 Swap 事件")
 
     qualified_addresses = set()
 
@@ -352,6 +361,11 @@ def get_qualified_addresses(token_contract_address, start_block, end_block, min_
         amount1In = event['args']['amount1In']
         amount0Out = event['args']['amount0Out']
         amount1Out = event['args']['amount1Out']
+        tx_hash = event['transactionHash'].hex()
+
+        print(f"\n处理交易: {tx_hash}")
+        print(f"amount0In: {amount0In}, amount1In: {amount1In}")
+        print(f"amount0Out: {amount0Out}, amount1Out: {amount1Out}")
 
         # Determine if this is a buy event (WETH in, token out)
         if amount0In > 0 and amount1Out > 0:  # Assuming WETH is token0
@@ -363,13 +377,18 @@ def get_qualified_addresses(token_contract_address, start_block, end_block, min_
         else:
             continue
 
+
+
+        print(f"买家地址: {buyer}")
+        print(f"WETH 数量: {weth_amount}")
+
         if weth_amount >= min_buy_weth:
             qualified_addresses.add(buyer)
-            print(f"找到符合条件的地址: {buyer}, 买入金额: {weth_amount} WETH")
+            print(f"符合条件的地址: {buyer}, 买入金额: {weth_amount} WETH")
         else:
-            print(f"地址不符合条件: {buyer}, 买入金额: {weth_amount} WETH")
+            print(f"地址不符合条件: {buyer}, 买入金额: {weth_amount} WETH, 最小要求: {min_buy_weth} WETH")
 
-    print(f"总共找到 {len(qualified_addresses)} 个符合条件的地址")
+    print(f"\n总共找到 {len(qualified_addresses)} 个符合条件的地址")
     return list(qualified_addresses), pair_contract_address
 
 
@@ -523,6 +542,17 @@ def calculate_address_profit(address, token_contract_address, pair_contract_addr
     return 0  # 如果所有重试都失败，返回0
 
 
+ens_cache = {}
+
+
+def resolve_ens(address):
+    if address in ens_cache:
+        return ens_cache[address]
+
+
+    return address
+
+
 def get_token_price_uniswap(token_address):
     method = "post"
     apiUrl = "https://api.1inch.dev/price/v1.1/1"
@@ -653,7 +683,6 @@ def main():
     application.add_handler(conv_handler)
 
     application.run_polling()
-
 
 if __name__ == '__main__':
     main()
