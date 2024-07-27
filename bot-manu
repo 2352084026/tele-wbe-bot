@@ -140,11 +140,21 @@ TOKEN_ADDRESS, START_TIME, END_TIME, TARGET_PROFIT, MIN_BUY_WETH, MAX_TX_COUNT =
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 无论处于何种状态，都清除所有用户数据
+    context.user_data.clear()
+    
     await update.message.reply_text('欢迎使用ETH地址分析bot! 使用 /analyze 开始分析。')
-    return ConversationHandler.END  # 添加这行以结束当前对话
+    return ConversationHandler.END
 
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 清除之前的所有状态
+    context.user_data.clear()
+    
+    # 设置新的对话状态
+    context.user_data['conversation_active'] = True
+    context.user_data['confirm_exit'] = False
+    
     await update.message.reply_text('请输入代币合约地址-如果该地址不是使用eth进行购买会使计算不准确:')
     return TOKEN_ADDRESS
 
@@ -668,8 +678,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('欢迎使用ETH地址分析bot! 使用 /analyze 开始分析。')
     return ConversationHandler.END  # 添加这行以结束当前对话
 
+async def timeout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text('会话已超时或结束。请使用 /analyze 重新开始分析。')
+    return ConversationHandler.END
+
 def main():
-    application = ApplicationBuilder().token('7321860628:AAELm29TZKQQCAmgNvDjZYO8ZLFIRKiPpA8').build()
+    application = ApplicationBuilder().token('YOUR_BOT_TOKEN').build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('analyze', analyze)],
@@ -681,13 +696,11 @@ def main():
             MIN_BUY_WETH: [MessageHandler(filters.TEXT & ~filters.COMMAND, min_buy_weth)],
             MAX_TX_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, max_tx_count)],
         },
-        fallbacks=[CommandHandler('start', start)],  # 添加 start 命令作为 fallback
+        fallbacks=[CommandHandler('start', start)],
+        conversation_timeout=600,  # 10分钟超时
     )
 
-    # 保留独立的 start 命令处理器
     application.add_handler(CommandHandler('start', start))
-    
-    # 确保 ConversationHandler 在 start 命令之后添加
     application.add_handler(conv_handler)
 
     application.run_polling()
