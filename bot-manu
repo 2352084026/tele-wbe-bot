@@ -141,6 +141,7 @@ TOKEN_ADDRESS, START_TIME, END_TIME, TARGET_PROFIT, MIN_BUY_WETH, MAX_TX_COUNT =
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text('欢迎使用ETH地址分析bot! 使用 /analyze 开始分析。')
+    return ConversationHandler.END  # 添加这行以结束当前对话
 
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -663,6 +664,10 @@ def get_internal_transactions_for_tx(tx_hash):
             return data['result']
     return []
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text('欢迎使用ETH地址分析bot! 使用 /analyze 开始分析。')
+    return ConversationHandler.END  # 添加这行以结束当前对话
+
 def main():
     application = ApplicationBuilder().token('7321860628:AAELm29TZKQQCAmgNvDjZYO8ZLFIRKiPpA8').build()
 
@@ -676,11 +681,12 @@ def main():
             MIN_BUY_WETH: [MessageHandler(filters.TEXT & ~filters.COMMAND, min_buy_weth)],
             MAX_TX_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, max_tx_count)],
         },
-        fallbacks=[],
+        fallbacks=[CommandHandler('start', start)],  # 添加 start 命令作为 fallback
     )
 
-    application.add_handler(CommandHandler('start', start))
     application.add_handler(conv_handler)
+    # 移除这行，因为 start 命令现在包含在 ConversationHandler 中
+    # application.add_handler(CommandHandler('start', start))
 
     application.run_polling()
 
