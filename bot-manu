@@ -144,7 +144,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text('请输入代币合约地址-不能识别ens地址-买卖不是使用eth，或者卖出换的不上eth会使数据不准确:')
+    await update.message.reply_text('请输入代币合约地址-如果该地址不是使用eth进行购买会使计算不准确:')
     return TOKEN_ADDRESS
 
 
