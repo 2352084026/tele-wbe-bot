@@ -11,6 +11,9 @@ from datetime import datetime, timedelta
 import requests
 import concurrent.futures
 from functools import partial
+from telegram.error import NetworkError, Unauthorized
+
+MAX_RETRIES = 10
 
 # 设置日志
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -201,6 +204,29 @@ async def max_tx_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(result)
     return ConversationHandler.END
+
+def run_bot(application, retry_count=0):
+    if retry_count >= MAX_RETRIES:
+        print(f"Maximum retry attempts ({MAX_RETRIES}) reached. Stopping the bot.")
+        return
+
+    try:
+        print(f"Attempt {retry_count + 1} to start the bot...")
+        application.run_polling()
+    except NetworkError:
+        print(f"Network error occurred. Trying to reconnect... (Attempt {retry_count + 1}/{MAX_RETRIES})")
+        time.sleep(1)
+        run_bot(application, retry_count + 1)
+    except Unauthorized:
+        print("Error: User has removed or blocked the bot.")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        if retry_count < MAX_RETRIES - 1:
+            print(f"Retrying in 3 seconds... (Attempt {retry_count + 1}/{MAX_RETRIES})")
+            time.sleep(3)
+            run_bot(application, retry_count + 1)
+        else:
+            print(f"Maximum retry attempts ({MAX_RETRIES}) reached. Stopping the bot.")
 
 
 def run_analysis(data):
@@ -703,7 +729,8 @@ def main():
     application.add_handler(CommandHandler('start', start))
     application.add_handler(conv_handler)
 
-    application.run_polling()
+    print("Starting bot...")
+    run_bot(application)
 
 if __name__ == '__main__':
     main()
