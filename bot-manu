@@ -11,7 +11,9 @@ from datetime import datetime, timedelta
 import requests
 import concurrent.futures
 from functools import partial
-
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, ConversationHandler
+from telegram.error import NetworkError, InvalidToken
 
 MAX_RETRIES = 10
 
@@ -143,21 +145,24 @@ TOKEN_ADDRESS, START_TIME, END_TIME, TARGET_PROFIT, MIN_BUY_WETH, MAX_TX_COUNT =
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 无论处于何种状态，都清除所有用户数据
     context.user_data.clear()
-    
-    await update.message.reply_text('欢迎使用ETH地址分析bot! 使用 /analyze 开始分析。')
+    context.user_data['conversation_active'] = False
+    await update.message.reply_text('已重置您的分析状态。欢迎使用ETH地址分析bot! 使用 /analyze 开始新的分析。')
     return ConversationHandler.END
 
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 强制重置状态
+    context.user_data.clear()
+    context.user_data['conversation_active'] = True
+
+    await update.message.reply_text('请输入代币合约地址-如果该地址不是使用eth进行购买会使计算不准确:')
+    return TOKEN_ADDRESS
+
     # 清除之前的所有状态
     context.user_data.clear()
-    
-    # 设置新的对话状态
     context.user_data['conversation_active'] = True
-    context.user_data['confirm_exit'] = False
-    
+
     await update.message.reply_text('请输入代币合约地址-如果该地址不是使用eth进行购买会使计算不准确:')
     return TOKEN_ADDRESS
 
@@ -170,13 +175,15 @@ async def token_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['start_time'] = update.message.text
-    await update.message.reply_text('请输入结束时间 (格式为 7.25-0.40-格式和上面一致)-时间不要太长，不然计算时间会很长，除非你的单笔买入很大:')
+    await update.message.reply_text(
+        '请输入结束时间 (格式为 7.25-0.40-格式和上面一致)-时间不要太长，不然计算时间会很长，除非你的单笔买入很大:')
     return END_TIME
 
 
 async def end_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['end_time'] = update.message.text
-    await update.message.reply_text('请输入目标总盈利金额-给出20个点左右误差浮动，eth参照价格不一样 -如果输入负数例如-100，则是计算-100及以上亏损地址(USD):')
+    await update.message.reply_text(
+        '请输入目标总盈利金额-给出20个点左右误差浮动，eth参照价格不一样 -如果输入负数例如-100，则是计算-100及以上亏损地址(USD):')
     return TARGET_PROFIT
 
 
@@ -184,9 +191,11 @@ async def target_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     input_profit = float(update.message.text)
     context.user_data['target_profit'] = input_profit
     if input_profit >= 0:
-        await update.message.reply_text('请输入时间段内地址可能的最大单笔买入WETH数量-不能超过实际购买的数量不然找不到，尽量高:')
+        await update.message.reply_text(
+            '请输入时间段内地址可能的最大单笔买入WETH数量-不能超过实际购买的数量不然找不到，尽量高:')
     else:
-        await update.message.reply_text(f'将查找亏损超过 ${abs(input_profit)} 的地址。请输入时间段内地址可能的最大单笔买入WETH数量-不能超过实际购买的数量不然找不到，尽量高:')
+        await update.message.reply_text(
+            f'将查找亏损超过 ${abs(input_profit)} 的地址。请输入时间段内地址可能的最大单笔买入WETH数量-不能超过实际购买的数量不然找不到，尽量高:')
     return MIN_BUY_WETH
 
 
@@ -203,7 +212,13 @@ async def max_tx_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = run_analysis(context.user_data)
 
     await update.message.reply_text(result)
+
+    # 清理状态
+    context.user_data.clear()
+    context.user_data['conversation_active'] = False
+
     return ConversationHandler.END
+
 
 def run_bot(application, retry_count=0):
     if retry_count >= MAX_RETRIES:
@@ -213,10 +228,13 @@ def run_bot(application, retry_count=0):
     try:
         print(f"Attempt {retry_count + 1} to start the bot...")
         application.run_polling()
-    except NetworkError:
-        print(f"Network error occurred. Trying to reconnect... (Attempt {retry_count + 1}/{MAX_RETRIES})")
+    except NetworkError as e:
+        print(f"Network error occurred: {e}. Trying to reconnect... (Attempt {retry_count + 1}/{MAX_RETRIES})")
         time.sleep(1)
         run_bot(application, retry_count + 1)
+    except InvalidToken:
+        print("Error: The provided token is invalid. Please check your bot token and try again.")
+        return  # 不要重试，因为token无效
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         if retry_count < MAX_RETRIES - 1:
@@ -412,8 +430,6 @@ def get_qualified_addresses(token_contract_address, start_block, end_block, min_
         else:
             continue
 
-
-
         print(f"买家地址: {buyer}")
         print(f"WETH 数量: {weth_amount}")
 
@@ -584,7 +600,6 @@ def resolve_ens(address):
     if address in ens_cache:
         return ens_cache[address]
 
-
     return address
 
 
@@ -661,6 +676,7 @@ def get_address_token_transactions(address, token_address, start_time, end_time)
 
     return transactions
 
+
 def get_transaction_eth_input(tx_hash):
     tx = web3.eth.get_transaction(tx_hash)
     receipt = web3.eth.get_transaction_receipt(tx_hash)
@@ -674,6 +690,7 @@ def get_transaction_eth_input(tx_hash):
             total_eth_input += Decimal(Web3.from_wei(int(internal_tx['value']), 'ether'))
 
     return total_eth_input
+
 
 def get_weth_price_usd():
     try:
@@ -698,17 +715,18 @@ def get_internal_transactions_for_tx(tx_hash):
             return data['result']
     return []
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text('欢迎使用ETH地址分析bot! 使用 /analyze 开始分析。')
-    return ConversationHandler.END  # 添加这行以结束当前对话
+
+
 
 async def timeout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text('会话已超时或结束。请使用 /analyze 重新开始分析。')
+    context.user_data['conversation_active'] = False
+    await update.message.reply_text("对话已超时。请使用 /analyze 重新开始分析。")
     return ConversationHandler.END
 
+
 def main():
-    application = ApplicationBuilder().token('YOUR_BOT_TOKEN').build()
+    application = ApplicationBuilder().token('7321860628:AAELm29TZKQQCAmgNvDjZYO8ZLFIRKiPpA8').build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('analyze', analyze)],
@@ -726,9 +744,10 @@ def main():
 
     application.add_handler(CommandHandler('start', start))
     application.add_handler(conv_handler)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, timeout))
 
-    print("Starting bot...")
-    run_bot(application)
+    application.run_polling()
+
 
 if __name__ == '__main__':
     main()
