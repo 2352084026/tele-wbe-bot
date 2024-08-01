@@ -1,0 +1,324 @@
+import requests
+import time
+from datetime import datetime, timedelta
+import json
+from requests.exceptions import RequestException, ProxyError
+import logging
+
+# 设置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Alchemy API 网址和API密钥
+alchemy_url = "https://solana-mainnet.g.alchemy.com/v2/Flixojc5Cmnk7RFCleAdZXWxDSTar--k"
+
+
+# 1. 查询代币信息
+def get_token_info(token_address):
+    url = f"https://frontend-api.pump.fun/coins/{token_address}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        raise Exception(f"无法获取代币信息，HTTP状态码: {response.status_code}, 响应: {response.text}")
+
+
+# 2. 获取交易详情
+def get_transaction_details(signature, retry=3):
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getTransaction",
+        "params": [
+            signature,
+            {"encoding": "json", "maxSupportedTransactionVersion": 0}
+        ]
+    }
+
+    for attempt in range(retry):
+        response = requests.post(alchemy_url, headers=headers, json=payload)
+        if response.status_code == 200:
+            response_json = response.json()
+            if 'result' in response_json:
+                return response_json['result']
+            elif 'error' in response_json:
+                raise Exception(f"交易详情错误: {response_json['error']['message']}")
+        elif response.status_code == 429:
+            wait_time = 2 ** attempt  # 指数退避
+            logger.warning(f"请求过多，等待{wait_time}秒后重试（{attempt + 1}/{retry}）...")
+            time.sleep(wait_time)
+        else:
+            raise Exception(f"无法获取交易详情，HTTP状态码: {response.status_code}, 响应: {response.text}")
+
+    raise Exception(f"在重试{retry}次后仍无法获取交易详情")
+
+
+# 3. 获取代币交易
+def get_token_transactions(token_address, before=None, limit=1000, max_retries=10, initial_delay=0.1):
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getSignaturesForAddress",
+        "params": [
+            token_address,
+            {"limit": limit}
+        ]
+    }
+    if before:
+        payload["params"][1]["before"] = before
+
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(alchemy_url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            response_json = response.json()
+            if 'result' in response_json:
+                return response_json['result']
+            elif 'error' in response_json:
+                raise Exception(f"API 错误: {response_json['error']}")
+            else:
+                raise Exception(f"响应中缺少'result'字段: {response_json}")
+        except (RequestException, ProxyError) as e:
+            if attempt < max_retries - 1:
+                wait_time = initial_delay * (2 ** attempt)  # 指数退避策略
+                logger.warning(f"请求失败，{wait_time:.2f}秒后重试 (尝试 {attempt + 1}/{max_retries})...")
+                time.sleep(wait_time)
+            else:
+                raise Exception(f"在{max_retries}次尝试后仍无法获取交易: {str(e)}")
+
+    raise Exception(f"在{max_retries}次尝试后仍无法获取交易")
+
+
+# 4. 查找代币交易
+def find_token_transactions(token_address, target_time):
+    all_transactions = []
+    before = None
+    target_time = int(target_time)
+    logger.info(f"开始查找交易，目标时间: {datetime.fromtimestamp(target_time).strftime('%Y-%m-%d %H:%M:%S')}")
+
+    while True:
+        try:
+            transactions = get_token_transactions(token_address, before)
+            if not transactions:
+                break
+
+            oldest_tx_time = transactions[-1]['blockTime']
+            logger.info(
+                f"获取到 {len(transactions)} 笔交易，最早交易时间: {datetime.fromtimestamp(oldest_tx_time).strftime('%Y-%m-%d %H:%M:%S')}")
+
+            # 只添加目标时间之后的交易
+            filtered_transactions = [tx for tx in transactions if tx['blockTime'] >= target_time]
+            all_transactions.extend(filtered_transactions)
+
+            if oldest_tx_time <= target_time:
+                logger.info("已找到目标时间之前的交易，停止查询")
+                break
+
+            before = transactions[-1]['signature']
+        except Exception as e:
+            logger.error(f"获取交易时发生错误: {str(e)}")
+            break
+
+    logger.info(f"总共获取到 {len(all_transactions)} 笔目标时间之后的交易")
+    return all_transactions
+
+
+# 5. 处理代币交易
+def process_token_transaction(tx, token_address, min_sol_amount):
+    try:
+        details = get_transaction_details(tx['signature'])
+        if details and 'meta' in details and 'postTokenBalances' in details['meta']:
+            for balance in details['meta']['postTokenBalances']:
+                if balance['mint'] == token_address:
+                    # 这是涉及我们感兴趣的代币的交易
+                    timestamp = datetime.fromtimestamp(details['blockTime']).strftime('%Y-%m-%d %H:%M:%S')
+                    sender = details['transaction']['message']['accountKeys'][0]
+
+                    # 计算 SOL 变化
+                    pre_balances = details['meta']['preBalances']
+                    post_balances = details['meta']['postBalances']
+                    sol_change = (pre_balances[0] - post_balances[0]) / 1e9
+
+                    if sol_change >= min_sol_amount:
+                        return {
+                            "timestamp": timestamp,
+                            "signature": tx['signature'],
+                            "sender": sender,
+                            "sol_amount": sol_change,
+                            "wallet_address": sender
+                        }
+    except Exception as e:
+        logger.error(f"处理交易 {tx['signature']} 时出错: {str(e)}")
+
+    return None
+
+
+# 6. 查找最近的成功withdraw交易
+def find_latest_withdraw_transaction(address, limit=100):
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getSignaturesForAddress",
+        "params": [
+            address,
+            {"limit": limit}
+        ]
+    }
+    response = requests.post(alchemy_url, headers=headers, json=payload)
+    if response.status_code == 200:
+        response_json = response.json()
+        if 'result' in response_json and response_json['result']:
+            for tx in response_json['result']:
+                if tx.get('err') is None:  # 成功的交易
+                    details = get_transaction_details(tx['signature'])
+                    if 'withdraw' in str(details).lower():
+                        return tx
+            raise Exception("未找到成功的withdraw交易")
+        else:
+            raise Exception(f"无法获取交易历史: {response_json}")
+    else:
+        raise Exception(f"无法获取交易历史，HTTP状态码: {response.status_code}, 响应: {response.text}")
+
+
+# 修改后的函数：检查钱包活跃度
+def is_wallet_active(address):
+    logger.info(f"正在检查钱包 {address} 的活跃度...")
+
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getSignaturesForAddress",
+        "params": [
+            address,
+            {"limit": 10}  # 获取最近10笔交易
+        ]
+    }
+
+    try:
+        response = requests.post(alchemy_url, headers=headers, json=payload)
+        if response.status_code == 200:
+            response_json = response.json()
+            if 'result' in response_json and response_json['result']:
+                transactions = response_json['result']
+
+                if len(transactions) < 10:
+                    logger.info(f"钱包 {address} 最近交易少于10笔，被判定为不活跃")
+                    return False
+
+                # 获取第10笔交易（最早的一笔）的时间
+                oldest_tx_time = datetime.fromtimestamp(transactions[-1]['blockTime'])
+                current_time = datetime.now()
+
+                # 判断最早的交易是否在一天之内
+                is_active = (current_time - oldest_tx_time) < timedelta(days=1)
+
+                if is_active:
+                    logger.info(f"钱包 {address} 最近10笔交易都在一天之内，被判定为活跃")
+                else:
+                    logger.info(f"钱包 {address} 最近10笔交易中有超过一天的，被判定为不活跃")
+
+                return is_active
+            else:
+                logger.info(f"钱包 {address} 没有交易记录，被判定为不活跃")
+                return False
+        else:
+            raise Exception(f"无法获取交易历史，HTTP状态码: {response.status_code}, 响应: {response.text}")
+    except Exception as e:
+        logger.error(f"检查钱包 {address} 活跃度时出错: {str(e)}")
+        return False
+
+# 主函数
+def main():
+    token_address = input("请输入代币地址: ")
+    min_sol_amount = float(input("请输入最低购买SOL数量: "))
+    active_count = int(input("请输入需要找到的活跃钱包数量: "))
+    inactive_count = int(input("请输入需要找到的不活跃钱包数量: "))
+
+    try:
+        # 获取代币信息
+        token_info = get_token_info(token_address)
+        bonding_curve_address = token_info['bonding_curve']
+        logger.info(f"代币名称: {token_info.get('name', 'Unknown')}")
+        logger.info(f"代币符号: {token_info.get('symbol', 'Unknown')}")
+        logger.info(f"Bonding curve地址: {bonding_curve_address}")
+
+        # 查找最近的成功withdraw交易
+        logger.info("正在查找最近的成功withdraw交易...")
+        withdraw_transaction = find_latest_withdraw_transaction(bonding_curve_address)
+
+        # 获取交易详情
+        transaction_details = get_transaction_details(withdraw_transaction['signature'])
+
+        pool_creation_time = transaction_details['blockTime']
+        logger.info(
+            f"找到可能的池子创建时间: {datetime.fromtimestamp(pool_creation_time).strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # 获取代币相关的交易
+        token_transactions = find_token_transactions(token_address, pool_creation_time)
+        logger.info(f"获取到 {len(token_transactions)} 笔代币相关交易")
+
+        # 按时间顺序排序交易
+        sorted_transactions = sorted(token_transactions, key=lambda x: x['blockTime'])
+        logger.info("交易已按时间顺序排序")
+
+        # 处理交易
+        active_wallets = []
+        inactive_wallets = []
+        processed_count = 0
+
+        logger.info("开始处理交易...")
+        for tx in sorted_transactions:
+            processed_count += 1
+            tx_time = datetime.fromtimestamp(tx['blockTime']).strftime('%Y-%m-%d %H:%M:%S')
+            logger.info(
+                f"正在处理交易 {processed_count}/{len(sorted_transactions)}: {tx['signature']} (时间: {tx_time})")
+            result = process_token_transaction(tx, token_address, min_sol_amount)
+            if result:
+                wallet_address = result['wallet_address']
+                if is_wallet_active(wallet_address):
+                    if len(active_wallets) < active_count:
+                        active_wallets.append(result)
+                        logger.info(f"找到活跃钱包: {wallet_address}")
+                else:
+                    if len(inactive_wallets) < inactive_count:
+                        inactive_wallets.append(result)
+                        logger.info(f"找到不活跃钱包: {wallet_address}")
+
+                if len(active_wallets) == active_count and len(inactive_wallets) == inactive_count:
+                    break
+            else:
+                logger.info(f"跳过不满足条件的交易: {tx['signature']}")
+
+        # 打印结果
+        logger.info("\n活跃钱包列表:")
+        for transaction in active_wallets:
+            logger.info(f"时间: {transaction['timestamp']}")
+            logger.info(f"签名: {transaction['signature']}")
+            logger.info(f"钱包地址: {transaction['wallet_address']}")
+            logger.info(f"SOL 变化: {transaction['sol_amount']:.9f} SOL")
+            logger.info("------------------------")
+
+        logger.info("\n不活跃钱包列表:")
+        for transaction in inactive_wallets:
+            logger.info(f"时间: {transaction['timestamp']}")
+            logger.info(f"签名: {transaction['signature']}")
+            logger.info(f"钱包地址: {transaction['wallet_address']}")
+            logger.info(f"SOL 变化: {transaction['sol_amount']:.9f} SOL")
+            logger.info("------------------------")
+
+        logger.info(f"总共处理的交易数: {processed_count}")
+        logger.info(f"找到的活跃钱包数: {len(active_wallets)}")
+        logger.info(f"找到的不活跃钱包数: {len(inactive_wallets)}")
+
+    except Exception as e:
+        logger.error(f"发生错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+    main()
