@@ -250,7 +250,7 @@ async def process_tasks(application):
             await asyncio.sleep(1)
 
 async def start_application():
-    application = ApplicationBuilder().token('7321860628:AAELm29TZKQQCAmgNvDjZYO8ZLFIRKiPpA8').build()
+    application = ApplicationBuilder().token('').build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('analyze', analyze)],
