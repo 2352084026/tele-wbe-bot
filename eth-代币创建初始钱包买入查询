@@ -206,8 +206,8 @@ def is_wallet_active(address, token_contract, current_block):
         logger.error(f"检查钱包 {address} 活跃度时出错: {str(e)}")
         return False
 
-def find_traders(token_address, start_block, min_amount, active_count, inactive_count):
-    logger.info(f"开始搜索交易者，目标: {active_count} 个活跃钱包，{inactive_count} 个不活跃钱包")
+def find_traders(token_address, start_block, min_amount, total_count):
+    logger.info(f"开始搜索交易者，目标: 总共 {total_count} 个钱包")
     active_traders = []
     inactive_traders = []
     current_block = w3.eth.block_number
@@ -220,7 +220,7 @@ def find_traders(token_address, start_block, min_amount, active_count, inactive_
     block_number = start_block
     processed_txs = set()  # 用于存储已处理的交易哈希
 
-    while (len(active_traders) < active_count or len(inactive_traders) < inactive_count) and block_number <= current_block:
+    while (len(active_traders) + len(inactive_traders) < total_count) and block_number <= current_block:
         try:
             logger.info(f"正在处理区块: {block_number}")
 
@@ -254,17 +254,17 @@ def find_traders(token_address, start_block, min_amount, active_count, inactive_
                     is_active = is_wallet_active(trader, token_contract, current_block)
                     trader_info = (trader, abs(eth_change), tx_hash, tx_time, token_change)
 
-                    if is_active and len(active_traders) < active_count:
+                    if is_active:
                         active_traders.append(trader_info)
                         logger.info(
                             f"找到活跃大额买家: {trader}, 买入数量: {abs(eth_change):.6f} ETH, {token_change:.6f} 代币, 时间: {tx_time}")
-                    elif not is_active and len(inactive_traders) < inactive_count:
+                    else:
                         inactive_traders.append(trader_info)
                         logger.info(
                             f"找到不活跃大额买家: {trader}, 买入数量: {abs(eth_change):.6f} ETH, {token_change:.6f} 代币, 时间: {tx_time}")
 
-                    if len(active_traders) == active_count and len(inactive_traders) == inactive_count:
-                        logger.info("已找到足够数量的活跃和不活跃钱包")
+                    if len(active_traders) + len(inactive_traders) == total_count:
+                        logger.info("已找到足够数量的钱包")
                         return active_traders, inactive_traders
                 else:
                     logger.info(f"不符合大额交易条件: 金额小于{min_amount} ETH 或非买入交易")
@@ -279,7 +279,7 @@ def find_traders(token_address, start_block, min_amount, active_count, inactive_
     logger.info(f"搜索完成，找到 {len(active_traders)} 个活跃钱包和 {len(inactive_traders)} 个不活跃钱包")
     return active_traders, inactive_traders
 
-def main(token_address, min_amount, active_count, inactive_count):
+def main(token_address, min_amount, total_count):
     logger.info(f"开始分析代币 {token_address}")
     creation_block = get_creation_block(token_address)
     if creation_block is None:
@@ -289,8 +289,7 @@ def main(token_address, min_amount, active_count, inactive_count):
     logger.info(f"代币创建区块: {creation_block}")
 
     checksum_token_address = Web3.to_checksum_address(token_address)
-    active_traders, inactive_traders = find_traders(checksum_token_address, creation_block, min_amount, active_count,
-                                                    inactive_count)
+    active_traders, inactive_traders = find_traders(checksum_token_address, creation_block, min_amount, total_count)
 
     logger.info("\n活跃大额交易者钱包地址:")
     for trader, amount, tx_hash, tx_time, token_change in active_traders:
@@ -305,6 +304,5 @@ def main(token_address, min_amount, active_count, inactive_count):
 if __name__ == "__main__":
     token_address = input("请输入代币合约地址: ")
     min_amount = float(input("请输入最低单笔购买量 (ETH): "))
-    active_count = int(input("请输入需要找到的活跃钱包数量: "))
-    inactive_count = int(input("请输入需要找到的不活跃钱包数量: "))
-    main(token_address, min_amount, active_count, inactive_count)
+    total_count = int(input("请输入需要找到的总钱包数量: "))
+    main(token_address, min_amount, total_count)
