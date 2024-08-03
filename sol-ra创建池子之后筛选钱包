@@ -235,8 +235,7 @@ def is_wallet_active(address):
 def main():
     token_address = input("请输入代币地址: ")
     min_sol_amount = float(input("请输入最低购买SOL数量: "))
-    active_count = int(input("请输入需要找到的活跃钱包数量: "))
-    inactive_count = int(input("请输入需要找到的不活跃钱包数量: "))
+    total_wallet_count = int(input("请输入需要找到的总钱包数量: "))
 
     try:
         # 获取代币信息
@@ -280,15 +279,13 @@ def main():
             if result:
                 wallet_address = result['wallet_address']
                 if is_wallet_active(wallet_address):
-                    if len(active_wallets) < active_count:
-                        active_wallets.append(result)
-                        logger.info(f"找到活跃钱包: {wallet_address}")
+                    active_wallets.append(result)
+                    logger.info(f"找到活跃钱包: {wallet_address}")
                 else:
-                    if len(inactive_wallets) < inactive_count:
-                        inactive_wallets.append(result)
-                        logger.info(f"找到不活跃钱包: {wallet_address}")
+                    inactive_wallets.append(result)
+                    logger.info(f"找到不活跃钱包: {wallet_address}")
 
-                if len(active_wallets) == active_count and len(inactive_wallets) == inactive_count:
+                if len(active_wallets) + len(inactive_wallets) == total_wallet_count:
                     break
             else:
                 logger.info(f"跳过不满足条件的交易: {tx['signature']}")
@@ -313,6 +310,7 @@ def main():
         logger.info(f"总共处理的交易数: {processed_count}")
         logger.info(f"找到的活跃钱包数: {len(active_wallets)}")
         logger.info(f"找到的不活跃钱包数: {len(inactive_wallets)}")
+        logger.info(f"查询的代币合约地址: {token_address}")
 
     except Exception as e:
         logger.error(f"发生错误: {str(e)}")
