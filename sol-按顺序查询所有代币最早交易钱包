@@ -252,6 +252,7 @@ def main():
             active_wallets = []
             inactive_wallets = []
             processed_count = 0
+            unique_wallets = set()
 
             logger.info(Fore.MAGENTA + "开始处理交易...")
             for tx in sorted_transactions:
@@ -262,15 +263,19 @@ def main():
                 result = process_token_transaction(tx, token_info['mint'], min_sol_amount)
                 if result:
                     wallet_address = result['wallet_address']
-                    if is_wallet_active(wallet_address):
-                        active_wallets.append(result)
-                        logger.info(Fore.GREEN + f"找到活跃钱包: {wallet_address}")
-                    else:
-                        inactive_wallets.append(result)
-                        logger.info(Fore.YELLOW + f"找到不活跃钱包: {wallet_address}")
+                    if wallet_address not in unique_wallets:
+                        unique_wallets.add(wallet_address)
+                        if is_wallet_active(wallet_address):
+                            active_wallets.append(result)
+                            logger.info(Fore.GREEN + f"找到新的活跃钱包: {wallet_address}")
+                        else:
+                            inactive_wallets.append(result)
+                            logger.info(Fore.YELLOW + f"找到新的不活跃钱包: {wallet_address}")
 
-                    if len(active_wallets) + len(inactive_wallets) == total_wallet_count:
-                        break
+                        if len(unique_wallets) == total_wallet_count:
+                            break
+                    else:
+                        logger.info(Fore.YELLOW + f"跳过重复的钱包地址: {wallet_address}")
                 else:
                     logger.info(Fore.YELLOW + f"跳过不满足条件的交易: {tx['signature']}")
 
@@ -314,9 +319,9 @@ def main():
             break
 
 if __name__ == "__main__":
-            try:
-                main()
-            except KeyboardInterrupt:
-                logger.info(Fore.MAGENTA + "\n程序被用户中断")
-            finally:
-                logger.info(Fore.CYAN + "程序结束")
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info(Fore.MAGENTA + "\n程序被用户中断")
+    finally:
+        logger.info(Fore.CYAN + "程序结束")
